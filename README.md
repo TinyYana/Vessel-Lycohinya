@@ -90,6 +90,14 @@ reimplemented. When GriefPrevention denies an action, its specific denial reason
 player alongside Vessel's own message. GriefPrevention is a soft dependency: Vessel starts up
 normally without it, and this integration does not affect WorldGuard/Towny support.
 
+⚠ **GriefPrevention 16.18.2 does not run on Folia** — confirmed by actually starting it on a Folia
+fork: it's rejected at load ("not marked as supporting Folia") unless that check is disabled, and
+even then it crashes on `onEnable()` (`UnsupportedOperationException`: it calls the legacy
+`Bukkit.getScheduler().scheduleSyncRepeatingTask`, which Folia's threading model rejects outright).
+Vessel handles this gracefully — a crashed-and-disabled GriefPrevention is treated the same as
+GriefPrevention being absent — but this is a real gap in what GriefPrevention itself currently
+supports, not something `GriefPreventionProtectionAdapter` can work around. See `TESTING.md`.
+
 ## Folia support
 
 Capture/release run inside the Bukkit events they're triggered from, which Folia already dispatches
@@ -128,6 +136,14 @@ permissions plugin.
   (currently 16.18.2-SNAPSHOT). GriefPrevention's `ClaimPermission` enum has since been renamed
   upstream (`Inventory` → `Container` in 18.0.0+); bumping the dependency requires re-checking that
   mapping in `GriefPreventionProtectionAdapter`.
+* GriefPrevention 16.18.2 does not run on Folia at all (confirmed live — see above and `TESTING.md`),
+  so the GriefPrevention integration is inert on a real Folia/Lophinya deployment today; that's a
+  GriefPrevention limitation, not Vessel's.
+* Live client-driven capture/release on a Folia/Lophinya server was not completed this session —
+  blocked by bot-tooling instability on the specific experimental fork tested, not by Vessel's code.
+  Folia's clean plugin load/enable and the code-level thread-safety audit are verified; a full
+  interactive pass still needs a real Minecraft client. See `TESTING.md` for exactly what was and
+  wasn't run.
 
 ## Documentation & Support
 

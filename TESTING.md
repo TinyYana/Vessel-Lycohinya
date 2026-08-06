@@ -23,10 +23,12 @@ see below.
 
 ## What was verified live (this session)
 
+### Paper 26.2
+
 An isolated Paper 26.2 test server (build 26.2-87, the same jar already validated in Lycohinya's own
 `s01-testbed`) was started with Vessel's built jar plus GriefPrevention 16.18.1-38-g04e7bc7 (the exact
 version resolved by the `com.griefprevention:GriefPrevention:16.18.2-SNAPSHOT` dependency pinned in
-`build.gradle`, confirmed via the server's own plugin list) installed alongside it:
+`build.gradle`) installed alongside it:
 
 - Both plugins loaded and enabled with **zero warnings or errors** in the console log — in
   particular, `GriefPreventionProtectionAdapter` registered successfully (no "adapter failed to
@@ -37,32 +39,65 @@ version resolved by the `com.griefprevention:GriefPrevention:16.18.2-SNAPSHOT` d
 - `/vessel give <player> <type> <amount> -s` was exercised via RCON multiple times and correctly
   granted items (server log: `[Vessel] Gave <player> 1 consumable vessel(s) silently.`).
 - GriefPrevention's own claim-creation flow (`/adjustclaimblocks`, golden-shovel corner-claiming,
-  `/claimlist`) was exercised via a real mineflayer bot player and functioned normally, confirming
-  the test environment's GriefPrevention install itself is healthy.
+  `/claimlist`) was exercised via a real mineflayer bot player and functioned normally.
+- **A real client-driven capture and a real client-driven denied capture both completed
+  end to end**, confirmed via the reliable signal (entity present/absent — see the note on
+  `bot.heldItem` below, which is not reliable): a player in the open right-clicked a live cow with a
+  consumable vessel and the cow was removed (capture succeeded); a second, untrusted player then
+  right-clicked a cow standing inside the first player's GriefPrevention claim and the cow was
+  **not** removed (GriefPrevention correctly denied the capture via `Claim#checkPermission`, exactly
+  as `GriefPreventionProtectionAdapter` is designed to consume it). This exercises the full path —
+  `PlayerInteractEntityEvent` → `EntitySnapshotAdapter` → `VesselPayloadStore` →
+  GriefPrevention's `Claim#checkPermission` → entity remove/keep — driven by an actual client action,
+  not a synthetic call.
+- Caveat: `bot.heldItem`/`bot.inventory` in mineflayer did **not** reliably reflect the server-side
+  item change immediately after these interactions in this session (it kept reporting the pre-capture
+  material even when the entity-removal signal proved the capture had gone through) — this looks like
+  a mineflayer-side inventory-cache staleness issue at this MC 26.2-via-ViaBackwards protocol
+  distance, not a Vessel bug. Treat entity presence/absence, not `bot.heldItem`, as the reliable
+  signal in any future bot-driven test of this plugin.
 
-### What was attempted but blocked by tooling, not by Vessel
+### Folia / Lophinya 26.2
 
-A full automated capture/release test matrix (wilderness / owner's claim / outsider-denied, driven by
-two mineflayer bots right-clicking real mobs) was attempted. Minecraft 26.2 isn't supported by
-mineflayer yet (tracked upstream as issue #3893 — see `docs/MINEFLAYER_TESTING.md` in the Lycohinya
-repo for the full writeup), so the test server also ran ViaVersion+ViaBackwards to let a 1.21.4
-mineflayer bot connect through protocol translation, following that doc's documented workaround.
+A second isolated server was built from Lophinya's own bench runtime (`Lophinya_Dev/bench/lophinya`,
+a Luminol-based Folia fork, MC 26.2 protocol 776, `io.papermc.paper.threadedregions` classes
+confirmed present) with the same Vessel jar and GriefPrevention 16.18.2 installed:
 
-Through that setup, **entities created via RCON's `/summon` never reached the bot** (no
-`entitySpawn` event, never appeared in `bot.entities`), while naturally-spawned passive mobs (from
-the server's normal mob-spawning cycle) reached the bot fine and fired `entitySpawn` normally. This
-was isolated with a minimal diagnostic bot script (summon-only, no Vessel involved, with and without
-NBT, with and without a prior teleport) — confirming it's specific to how `/summon`-created entities
-propagate through this RCON+ViaBackwards combination, not a Vessel defect, a general connectivity
-problem, or something specific to teleporting. Given that, a bot can't be made to interact with a
-mob it never learns exists, so the automated matrix below could not be completed in this session.
-
-**This is an environment/tooling gap, not a code gap** — the actual capture/release logic exercised
-above (loading, config parsing, permission-string resolution against the real GriefPrevention enum)
-all passed against the real dependency; what's unverified is specifically the live player-interaction
-path (`PlayerInteractEntityEvent`/`PlayerInteractEvent` → `EntitySnapshotAdapter` →
-`VesselPayloadStore` → GriefPrevention's `Claim#checkPermission` → entity spawn), end to end, driven
-by an actual client action.
+- The server **starts successfully** and Vessel **loads and enables with zero errors** on it.
+- **GriefPrevention 16.18.2 does not work on this Folia fork at all.** By default it's rejected
+  outright at load time ("not marked as supporting Folia"). Disabling that check (Luminol's own
+  `luminol_global_config.toml` → `[unsupported.disable_check_for_folia_supported]` →
+  `disable_for_paper = true`, which exists specifically for this scenario) lets it load, but it then
+  **crashes during `onEnable()`**:
+  ```
+  java.lang.UnsupportedOperationException: sync Bukkit scheduler task from GriefPrevention
+  (CraftScheduler.scheduleSyncRepeatingTask, delay=12000, period=12000) is not supported under
+  regionised threading
+  ```
+  GriefPrevention calls the legacy non-region-aware `Bukkit.getScheduler().scheduleSyncRepeatingTask`
+  internally, which Folia's threading model rejects outright — this is a real limitation of
+  GriefPrevention 16.18.2 itself, not something Vessel's adapter can work around.
+- **Vessel handles that correctly**: with GriefPrevention crashed and self-disabled, Vessel still
+  enables with zero warnings/errors, exactly as it does with GriefPrevention absent entirely — the
+  `isPluginEnabled("GriefPrevention")` check in `ProtectionService.create()` correctly treats
+  "installed but failed to enable" the same as "not installed," satisfying the soft-dependency
+  requirement even under this real, adversarial failure mode.
+- No `IllegalStateException`/"failed main thread check" (or any other thread-ownership violation)
+  appeared anywhere in the console log across all of this session's activity on the Folia server
+  (plugin enable, player join/leave, `/vessel give`, GriefPrevention's crash and disable).
+- **Not completed**: a full client-driven capture/release cycle specifically on this Folia server.
+  A mineflayer bot could connect, spawn, and receive items (`/vessel give` confirmed via server log
+  for three separate test accounts), but the bot connection proved unstable on this particular
+  experimental fork — it disconnected on its own within seconds to tens of seconds of normal play
+  (walking, looking around) in every attempt, with and without RCON teleporting involved, independent
+  of Vessel. This reproduced consistently across many attempts with different usernames and command
+  orderings, ruling out anything specific to a single run. Given mineflayer already isn't officially
+  MC 26.2-compatible and is being routed through ViaVersion/ViaBackwards protocol translation to reach
+  even the *Paper* server, adding an experimental/dev-build Folia fork on top compounds into
+  instability beyond what this session could resolve. This is a tooling gap, not a code gap — the
+  code-level Folia audit (`Bukkit.isOwnedByCurrentRegion` re-validation, per-player `EntityScheduler`
+  dispatch — see README's "Folia support" section) and the clean load/enable result stand on their
+  own; what's specifically unverified is a live capture/release interaction on Folia.
 
 ## Manual test procedure (needs a real Minecraft client)
 
@@ -113,8 +148,16 @@ Capture, then release, and confirm each survives the round trip:
 
 ### Folia / Lophinya
 
-Repeat the wilderness capture/release and the owner's-claim row on a Folia (or Lophinya) server with
-multiple loaded regions. Watch console for any `IllegalStateException` containing "failed main
-thread check" — none should appear. Specifically try releasing right at the boundary between two
-regions (walk near the edge of loaded/active terrain) to exercise the
-`Bukkit.isOwnedByCurrentRegion(...)` guard in `ReleaseListener`.
+⚠ **GriefPrevention 16.18.2 does not run on Folia** (confirmed this session — see "What was verified
+live" above): it crashes on `onEnable()` with `UnsupportedOperationException: sync Bukkit scheduler
+task ... is not supported under regionised threading`, even with the fork's Folia-support check
+disabled. On a real Folia/Lophinya deployment, GriefPrevention will not be available, and Vessel's
+GriefPrevention integration simply never activates (verified: Vessel treats this the same as
+GriefPrevention being absent, with a clean enable and no errors). Test the wilderness rows only; the
+claim-permission matrix isn't reachable until GriefPrevention itself ships a Folia-compatible build.
+
+Repeat the wilderness capture/release on a Folia (or Lophinya) server with multiple loaded regions.
+Watch console for any `IllegalStateException` containing "failed main thread check" — none should
+appear. Specifically try releasing right at the boundary between two regions (walk near the edge of
+loaded/active terrain) to exercise the `Bukkit.isOwnedByCurrentRegion(...)` guard in
+`ReleaseListener`.
