@@ -8,7 +8,6 @@ import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.entity.Entity;
-import org.bukkit.entity.EntitySnapshot;
 import org.bukkit.entity.Mob;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Tameable;
@@ -25,6 +24,12 @@ import org.maboroshi.vessel.config.ConfigManager;
 import org.maboroshi.vessel.config.objects.FilterRule;
 import org.maboroshi.vessel.config.settings.VesselTemplate;
 import org.maboroshi.vessel.config.settings.VesselTemplate.ExclusionSettings;
+import org.maboroshi.vessel.manager.InFlightGuard;
+import org.maboroshi.vessel.protection.ProtectionResult;
+import org.maboroshi.vessel.storage.EntitySnapshotAdapter;
+import org.maboroshi.vessel.storage.EntitySnapshotAdapter.CaptureResult;
+import org.maboroshi.vessel.storage.VesselDataException;
+import org.maboroshi.vessel.storage.VesselPayloadStore;
 import org.maboroshi.vessel.util.Keys;
 import org.maboroshi.vessel.util.Log;
 import org.maboroshi.vessel.util.Messages;
@@ -34,12 +39,14 @@ import org.maboroshi.vessel.util.VesselUtils;
 public class CaptureListener implements Listener {
     private final Vessel plugin;
     private final ConfigManager config;
+    private final InFlightGuard inFlightGuard;
 
     private static final MiniMessage mm = MiniMessage.miniMessage();
 
     public CaptureListener(Vessel plugin) {
         this.plugin = plugin;
         this.config = plugin.getConfigManager();
+        this.inFlightGuard = plugin.getInFlightGuard();
     }
 
     @EventHandler
@@ -62,6 +69,18 @@ public class CaptureListener implements Listener {
         Entity target = event.getRightClicked();
         if (!(target instanceof Mob clickedMob)) return;
 
+        // Guards against the same target entity being captured twice from a concurrent/duplicate
+        // interaction; released in the finally block below regardless of how this method returns.
+        String captureGuardKey = clickedMob.getUniqueId().toString();
+        if (!inFlightGuard.tryAcquire(captureGuardKey)) return;
+        try {
+            captureLocked(player, itemInHand, vesselType, clickedMob);
+        } finally {
+            inFlightGuard.release(captureGuardKey);
+        }
+    }
+
+    private void captureLocked(Player player, ItemStack itemInHand, String vesselType, Mob clickedMob) {
         VesselTemplate template = config.getVesselTemplate(vesselType);
         if (template == null) return;
 
@@ -83,8 +102,15 @@ public class CaptureListener implements Listener {
 
         Location loc = clickedMob.getLocation();
 
-        if (!plugin.getProtectionService().canCapture(player, loc)) {
+        ProtectionResult protection = plugin.getProtectionService().canCapture(player, loc);
+        if (!protection.allowed()) {
             Messages.send(player, config.getMessageConfig().general.cannotCaptureHere);
+            if (protection.denialReason() != null) {
+                Messages.send(
+                        player,
+                        config.getMessageConfig().general.protectionDenialReason,
+                        Messages.tag("reason", protection.denialReason()));
+            }
             return;
         }
 
@@ -127,7 +153,8 @@ public class CaptureListener implements Listener {
         }
 
         if (rules.named && clickedMob.customName() != null) {
-            Messages.send(player, config.getMessageConfig().general.cannotCaptureNamed, Messages.tag("entity_type", mobId));
+            Messages.send(
+                    player, config.getMessageConfig().general.cannotCaptureNamed, Messages.tag("entity_type", mobId));
             return;
         }
 
@@ -176,17 +203,16 @@ public class CaptureListener implements Listener {
             clickedMob.customName(cleanedComponent);
         }
 
-        EntitySnapshot snapshot = clickedMob.createSnapshot();
-        if (snapshot == null) {
-            Class<? extends Entity> entityClass = clickedMob.getType().getEntityClass();
-            if (entityClass != null) {
-                Entity temp = clickedMob.getWorld().createEntity(clickedMob.getLocation(), entityClass);
-                snapshot = temp.createSnapshot();
-            }
-        }
-
-        if (snapshot == null) {
-            Log.debug("Failed to create an EntitySnapshot for entity type: " + clickedMob.getType());
+        // Serialize first: build and validate the fully-formed result item before touching the mob
+        // or the vessel item in hand, so a failure here (e.g. entity too complex to store safely)
+        // never consumes the vessel or removes the entity.
+        String newVesselId = UUID.randomUUID().toString();
+        CaptureResult captureResult;
+        try {
+            captureResult = EntitySnapshotAdapter.capture(clickedMob, newVesselId);
+        } catch (VesselDataException e) {
+            Log.debug("Capture failed for entity type " + clickedMob.getType() + ": " + e.getMessage());
+            Messages.send(player, config.getMessageConfig().general.cannotCaptureTooComplex);
             return;
         }
 
@@ -196,7 +222,14 @@ public class CaptureListener implements Listener {
         ItemMeta resultMeta = resultItem.getItemMeta();
         if (resultMeta == null) return;
 
-        resultMeta.getPersistentDataContainer().set(Keys.MOB_DATA, PersistentDataType.STRING, snapshot.getAsString());
+        try {
+            VesselPayloadStore.write(resultMeta.getPersistentDataContainer(), captureResult.payload());
+        } catch (VesselDataException e) {
+            Log.debug("Failed to persist capture payload for entity type " + clickedMob.getType() + ": "
+                    + e.getMessage());
+            Messages.send(player, config.getMessageConfig().general.cannotCaptureTooComplex);
+            return;
+        }
         resultMeta.getPersistentDataContainer().set(Keys.MOB_NAME, PersistentDataType.STRING, targetName);
 
         if (mythicId != null)
@@ -206,16 +239,10 @@ public class CaptureListener implements Listener {
         if (spawnReason == null || spawnReason.isEmpty())
             spawnReason = clickedMob.getEntitySpawnReason().name();
         resultMeta.getPersistentDataContainer().set(Keys.SPAWN_REASON, PersistentDataType.STRING, spawnReason);
-        resultMeta
-                .getPersistentDataContainer()
-                .set(
-                        Keys.VESSEL_ID,
-                        PersistentDataType.STRING,
-                        UUID.randomUUID().toString());
         resultItem.setItemMeta(resultMeta);
 
         VesselCaptureEvent captureEvent =
-                new VesselCaptureEvent(player, snapshot, loc, vesselType, targetName, resultItem);
+                new VesselCaptureEvent(player, captureResult.snapshot(), loc, vesselType, targetName, resultItem);
         plugin.getServer().getPluginManager().callEvent(captureEvent);
 
         if (captureEvent.isCancelled()) return;

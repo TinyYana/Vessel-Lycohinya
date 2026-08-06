@@ -68,6 +68,22 @@ public class MessageConfig {
 
             @Comment("Message shown when a player cannot release in the current world.")
             public String cannotReleaseWorld = "<prefix> You cannot release mobs in <gray><world></gray>!";
+
+            @Comment(
+                    "Message shown when no safe space could be found to release into (also shown on Folia/region-boundary edge cases where the release point isn't safely reachable from this interaction).")
+            public String noSafeReleaseSpace = "<prefix> There is no safe space to release this vessel.";
+
+            @Comment(
+                    "Follow-up line shown after a capture/release denial when the protection plugin (e.g. GriefPrevention) provided a specific reason. Supports <reason>.")
+            public String protectionDenialReason = "<prefix> <gray><reason></gray>";
+
+            @Comment("Message shown when an entity's serialized data is too large to safely store.")
+            public String cannotCaptureTooComplex = "<prefix> This creature is too complex to be captured!";
+
+            @Comment(
+                    "Message shown when a vessel's stored entity data is corrupted, unreadable, or from a future/unknown schema version. The original item is left untouched.")
+            public String corruptedVesselData =
+                    "<prefix> <red>This vessel's data is corrupted and cannot be used.</red>";
         }
 
         @Configuration

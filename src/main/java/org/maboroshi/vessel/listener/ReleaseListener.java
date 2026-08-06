@@ -23,6 +23,11 @@ import org.maboroshi.vessel.config.ConfigManager;
 import org.maboroshi.vessel.config.objects.FilterRule;
 import org.maboroshi.vessel.config.settings.VesselTemplate;
 import org.maboroshi.vessel.handler.CooldownHandler;
+import org.maboroshi.vessel.manager.InFlightGuard;
+import org.maboroshi.vessel.protection.ProtectionResult;
+import org.maboroshi.vessel.storage.VesselDataException;
+import org.maboroshi.vessel.storage.VesselPayloadStore;
+import org.maboroshi.vessel.storage.VesselPayloadStore.ReadResult;
 import org.maboroshi.vessel.util.Keys;
 import org.maboroshi.vessel.util.Log;
 import org.maboroshi.vessel.util.Messages;
@@ -33,11 +38,13 @@ public class ReleaseListener implements Listener {
     private final Vessel plugin;
     private final ConfigManager config;
     private final CooldownHandler cooldownHandler;
+    private final InFlightGuard inFlightGuard;
 
     public ReleaseListener(Vessel plugin) {
         this.plugin = plugin;
         this.config = plugin.getConfigManager();
         this.cooldownHandler = plugin.getCooldownHandler();
+        this.inFlightGuard = plugin.getInFlightGuard();
     }
 
     @EventHandler
@@ -66,9 +73,28 @@ public class ReleaseListener implements Listener {
 
         ItemMeta meta = itemInHand.getItemMeta();
 
-        String nbtData = meta.getPersistentDataContainer().get(Keys.MOB_DATA, PersistentDataType.STRING);
-        if (nbtData == null || nbtData.isEmpty()) return;
+        if (!meta.getPersistentDataContainer().has(Keys.MOB_DATA, PersistentDataType.STRING)) return;
 
+        // Guards against the same vessel item being released twice from a concurrent/duplicate
+        // interaction. Very old pre-VESSEL_ID items (legacy v0, captured before this field existed)
+        // have no id to guard on yet — they proceed unguarded rather than being blocked outright.
+        String vesselId = meta.getPersistentDataContainer().get(Keys.VESSEL_ID, PersistentDataType.STRING);
+        boolean guarded = vesselId != null && inFlightGuard.tryAcquire(vesselId);
+        if (vesselId != null && !guarded) return;
+        try {
+            releaseLocked(event, player, itemInHand, vesselType, template, meta);
+        } finally {
+            if (guarded) inFlightGuard.release(vesselId);
+        }
+    }
+
+    private void releaseLocked(
+            PlayerInteractEvent event,
+            Player player,
+            ItemStack itemInHand,
+            String vesselType,
+            VesselTemplate template,
+            ItemMeta meta) {
         FilterRule worlds = template.restrictions.worlds;
         if (!VesselUtils.isAllowed(player.getWorld().getName(), worlds)) {
             Messages.send(
@@ -83,12 +109,30 @@ public class ReleaseListener implements Listener {
 
         Location loc = findSafeReleaseLocation(block, event.getBlockFace());
         if (loc == null) {
-            Messages.send(player, "<prefix> <white>There is no safe space to release this vessel.</white>");
+            Messages.send(player, config.getMessageConfig().general.noSafeReleaseSpace);
             return;
         }
 
-        if (!plugin.getProtectionService().canRelease(player, loc)) {
+        // Folia: this event already fires on the region owning the player, and the release point is
+        // always near them, but region ownership is dynamic (merge/split), so it's not guaranteed to
+        // be the same region at this exact moment. Everything below (GriefPrevention's claim lookup,
+        // which is not itself Folia-aware, and the entity spawn) needs to run on the thread that
+        // actually owns `loc` — reject cleanly here rather than let a cross-region access throw.
+        if (!Bukkit.isOwnedByCurrentRegion(loc)) {
+            Log.debug("Release location is not owned by the current region thread; rejecting this release attempt.");
+            Messages.send(player, config.getMessageConfig().general.noSafeReleaseSpace);
+            return;
+        }
+
+        ProtectionResult protection = plugin.getProtectionService().canRelease(player, loc);
+        if (!protection.allowed()) {
             Messages.send(player, config.getMessageConfig().general.cannotReleaseHere);
+            if (protection.denialReason() != null) {
+                Messages.send(
+                        player,
+                        config.getMessageConfig().general.protectionDenialReason,
+                        Messages.tag("reason", protection.denialReason()));
+            }
             return;
         }
 
@@ -97,7 +141,31 @@ public class ReleaseListener implements Listener {
             return;
         }
 
-        EntitySnapshot snapshot = plugin.getServer().getEntityFactory().createEntitySnapshot(nbtData);
+        // Parse (and lazily migrate) before doing anything else: a corrupt/unknown/future-schema
+        // payload must reject cleanly here and leave the item exactly as it was.
+        ReadResult readResult;
+        try {
+            readResult = VesselPayloadStore.readAndMigrate(meta.getPersistentDataContainer());
+        } catch (VesselDataException e) {
+            Log.debug("Failed to read vessel payload: " + e.getReason() + " - " + e.getMessage());
+            Messages.send(player, config.getMessageConfig().general.corruptedVesselData);
+            return;
+        }
+
+        if (readResult.migrated()) {
+            try {
+                VesselPayloadStore.write(meta.getPersistentDataContainer(), readResult.payload());
+                itemInHand.setItemMeta(meta);
+                Log.debug("Migrated vessel " + readResult.payload().vesselId() + " to schema v"
+                        + readResult.payload().schemaVersion() + ".");
+            } catch (VesselDataException e) {
+                // Pure reformat of data we just successfully read; failing to persist the upgrade is
+                // not fatal to this release, it just means the next read migrates again.
+                Log.debug("Failed to persist migrated vessel payload: " + e.getMessage());
+            }
+        }
+
+        EntitySnapshot snapshot = readResult.snapshot();
         String mobId = snapshot.getEntityType().name().toLowerCase(Locale.ROOT);
         Entity tempMob = snapshot.createEntity(loc.getWorld());
 

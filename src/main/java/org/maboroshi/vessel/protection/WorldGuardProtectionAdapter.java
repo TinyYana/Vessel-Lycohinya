@@ -21,12 +21,12 @@ public final class WorldGuardProtectionAdapter implements ProtectionAdapter {
     }
 
     @Override
-    public boolean canCapture(Player player, Location location) {
+    public ProtectionResult canCapture(Player player, Location location) {
         return canBuild(player, location);
     }
 
     @Override
-    public boolean canRelease(Player player, Location location) {
+    public ProtectionResult canRelease(Player player, Location location) {
         return canBuild(player, location);
     }
 
@@ -35,9 +35,9 @@ public final class WorldGuardProtectionAdapter implements ProtectionAdapter {
         return "WorldGuard";
     }
 
-    private boolean canBuild(Player player, Location location) {
+    private ProtectionResult canBuild(Player player, Location location) {
         if (player == null || location == null || location.getWorld() == null) {
-            return false;
+            return ProtectionResult.denied(null);
         }
 
         LocalPlayer localPlayer = WorldGuardPlugin.inst().wrapPlayer(player);
@@ -45,9 +45,11 @@ public final class WorldGuardProtectionAdapter implements ProtectionAdapter {
         com.sk89q.worldedit.util.Location adaptedLocation = BukkitAdapter.adapt(location);
 
         if (WorldGuard.getInstance().getPlatform().getSessionManager().hasBypass(localPlayer, adaptedWorld)) {
-            return true;
+            return ProtectionResult.ALLOWED;
         }
 
-        return cachedQuery.testState(adaptedLocation, localPlayer, Flags.BUILD);
+        return cachedQuery.testState(adaptedLocation, localPlayer, Flags.BUILD)
+                ? ProtectionResult.ALLOWED
+                : ProtectionResult.denied(null);
     }
 }

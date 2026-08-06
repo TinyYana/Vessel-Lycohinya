@@ -10,12 +10,12 @@ import org.bukkit.entity.Player;
 public final class TownyProtectionAdapter implements ProtectionAdapter {
 
     @Override
-    public boolean canCapture(Player player, Location location) {
+    public ProtectionResult canCapture(Player player, Location location) {
         return canBuild(player, location);
     }
 
     @Override
-    public boolean canRelease(Player player, Location location) {
+    public ProtectionResult canRelease(Player player, Location location) {
         return canBuild(player, location);
     }
 
@@ -24,22 +24,23 @@ public final class TownyProtectionAdapter implements ProtectionAdapter {
         return "Towny";
     }
 
-    private boolean canBuild(Player player, Location location) {
+    private ProtectionResult canBuild(Player player, Location location) {
         if (player == null || location == null) {
-            return false;
+            return ProtectionResult.denied(null);
         }
 
         World world = location.getWorld();
         if (world == null) {
-            return false;
+            return ProtectionResult.denied(null);
         }
 
         TownyAPI townyApi = TownyAPI.getInstance();
         if (townyApi == null || !townyApi.isTownyWorld(world)) {
-            return true;
+            return ProtectionResult.ALLOWED;
         }
 
-        return PlayerCacheUtil.getCachePermission(
+        boolean allowed = PlayerCacheUtil.getCachePermission(
                 player, location, location.getBlock().getType(), ActionType.BUILD);
+        return allowed ? ProtectionResult.ALLOWED : ProtectionResult.denied(null);
     }
 }

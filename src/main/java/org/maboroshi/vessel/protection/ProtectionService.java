@@ -38,25 +38,40 @@ public final class ProtectionService {
             }
         }
 
-        return new ProtectionService(adapters);
-    }
-
-    public boolean canCapture(Player player, Location location) {
-        return canPerformCheck(player, location, true);
-    }
-
-    public boolean canRelease(Player player, Location location) {
-        return canPerformCheck(player, location, false);
-    }
-
-    private boolean canPerformCheck(Player player, Location location, boolean capture) {
-        for (ProtectionAdapter adapter : adapters) {
-            boolean allowed = capture ? adapter.canCapture(player, location) : adapter.canRelease(player, location);
-            if (!allowed) {
-                return false;
+        if (Bukkit.getPluginManager().isPluginEnabled("GriefPrevention")) {
+            try {
+                var gpSettings = plugin.getConfigManager().getMainConfig().griefprevention;
+                adapters.add(new GriefPreventionProtectionAdapter(
+                        gpSettings.capturePermission, gpSettings.releasePermission));
+            } catch (Throwable exception) {
+                plugin.getLogger()
+                        .log(
+                                Level.WARNING,
+                                "GriefPrevention found, but the adapter failed to load. Is the version unsupported?",
+                                exception);
             }
         }
 
-        return true;
+        return new ProtectionService(adapters);
+    }
+
+    public ProtectionResult canCapture(Player player, Location location) {
+        return canPerformCheck(player, location, true);
+    }
+
+    public ProtectionResult canRelease(Player player, Location location) {
+        return canPerformCheck(player, location, false);
+    }
+
+    private ProtectionResult canPerformCheck(Player player, Location location, boolean capture) {
+        for (ProtectionAdapter adapter : adapters) {
+            ProtectionResult result =
+                    capture ? adapter.canCapture(player, location) : adapter.canRelease(player, location);
+            if (!result.allowed()) {
+                return result;
+            }
+        }
+
+        return ProtectionResult.ALLOWED;
     }
 }

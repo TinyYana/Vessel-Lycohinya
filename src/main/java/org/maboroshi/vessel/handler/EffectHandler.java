@@ -4,12 +4,18 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Particle;
 import org.bukkit.entity.Player;
+import org.bukkit.plugin.Plugin;
 import org.maboroshi.vessel.config.objects.effects.EffectGroup;
 import org.maboroshi.vessel.config.objects.effects.ParticleEffect;
 import org.maboroshi.vessel.config.objects.effects.SoundEffect;
 import org.maboroshi.vessel.util.Log;
 
 public class EffectHandler {
+    private final Plugin plugin;
+
+    public EffectHandler(Plugin plugin) {
+        this.plugin = plugin;
+    }
 
     public void playEffects(EffectGroup group, Location location, boolean globalSound) {
         if (group == null) return;
@@ -34,8 +40,15 @@ public class EffectHandler {
 
         try {
             if (globalSound) {
+                // Folia: each online player may be owned by a different region thread than the one
+                // calling this method, so the sound must be scheduled onto each player's own thread
+                // rather than played directly from here.
                 for (Player p : Bukkit.getOnlinePlayers()) {
-                    p.playSound(p.getLocation(), sound.type, sound.volume, sound.pitch);
+                    p.getScheduler()
+                            .run(
+                                    plugin,
+                                    task -> p.playSound(p.getLocation(), sound.type, sound.volume, sound.pitch),
+                                    null);
                 }
             } else {
                 if (location != null && location.getWorld() != null) {

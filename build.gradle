@@ -34,6 +34,7 @@ repositories {
     maven { url = 'https://maven.enginehub.org/repo/' }
     maven { url = 'https://repo.glaremasters.me/repository/towny/' }
     maven { url = 'https://mvn.lumine.io/repository/maven-public/' }
+    maven { url = 'https://repo.codemc.io/repository/maven-public/' }
 }
 
 dependencies {
@@ -47,6 +48,23 @@ dependencies {
     compileOnly("com.sk89q.worldguard:worldguard-bukkit:7.0.18")
     compileOnly("com.palmergames.bukkit.towny:towny:0.103.1.1")
     compileOnly("io.lumine:Mythic-Dist:5.13.0")
+    // No Maven Central release; CodeMC mirrors GriefPrevention's own CI builds. compileOnly only,
+    // never shaded — resolved at runtime against whatever GriefPrevention jar the server has installed.
+    compileOnly("com.griefprevention:GriefPrevention:16.18.2-SNAPSHOT")
+
+    // compileOnly isn't extended to the test source set by Gradle's Java plugin, so anything the
+    // test code loads (even indirectly, like GriefPreventionProtectionAdapter's Log/Bukkit imports)
+    // needs to be repeated here explicitly.
+    testImplementation("io.papermc.paper:paper-api:26.1.2.build.+")
+    testImplementation("com.griefprevention:GriefPrevention:16.18.2-SNAPSHOT")
+
+    testImplementation(platform("org.junit:junit-bom:6.0.3"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+test {
+    useJUnitPlatform()
 }
 
 tasks.register("printVersion") {

@@ -28,5 +28,23 @@ public class MainConfig {
             "Recommended minimum value: 500."
         })
         public long cooldown = 500L;
+
+        @Comment("GriefPrevention integration settings (only used if GriefPrevention is installed).")
+        public GriefPreventionSettings griefprevention = new GriefPreventionSettings();
+    }
+
+    @Configuration
+    public static class GriefPreventionSettings {
+        @Comment({
+            "The GriefPrevention claim permission required to capture an entity inside a claim.",
+            "Accepted values: ACCESS, CONTAINER, BUILD. Invalid values fall back to CONTAINER with a warning."
+        })
+        public String capturePermission = "CONTAINER";
+
+        @Comment({
+            "The GriefPrevention claim permission required to release an entity inside a claim.",
+            "Accepted values: ACCESS, CONTAINER, BUILD. Invalid values fall back to BUILD with a warning."
+        })
+        public String releasePermission = "BUILD";
     }
 }

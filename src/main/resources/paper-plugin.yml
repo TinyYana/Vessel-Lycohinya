@@ -27,3 +27,6 @@ dependencies:
     Towny:
       load: BEFORE
       required: false
+    GriefPrevention:
+      load: BEFORE
+      required: false

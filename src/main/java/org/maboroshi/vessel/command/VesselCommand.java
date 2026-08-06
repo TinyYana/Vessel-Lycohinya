@@ -96,7 +96,11 @@ public class VesselCommand {
         ConfigManager config = plugin.getConfigManager();
 
         if (amount < 1 || amount > 64) {
-            Messages.send(sender, config.getMessageConfig().commands.invalidAmount, Messages.tag("min", 1), Messages.tag("max", 64));
+            Messages.send(
+                    sender,
+                    config.getMessageConfig().commands.invalidAmount,
+                    Messages.tag("min", 1),
+                    Messages.tag("max", 64));
             return;
         }
 

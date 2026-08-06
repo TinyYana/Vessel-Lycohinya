@@ -17,6 +17,7 @@ import org.maboroshi.vessel.handler.VesselEventHandler;
 import org.maboroshi.vessel.listener.CaptureListener;
 import org.maboroshi.vessel.listener.ReleaseListener;
 import org.maboroshi.vessel.listener.SpawnReasonListener;
+import org.maboroshi.vessel.manager.InFlightGuard;
 import org.maboroshi.vessel.manager.VesselManager;
 import org.maboroshi.vessel.protection.ProtectionService;
 import org.maboroshi.vessel.util.Keys;
@@ -32,6 +33,7 @@ public final class Vessel extends JavaPlugin {
     private ActionHandler actionHandler;
     private VesselManager vesselManager;
     private ProtectionService protectionService;
+    private final InFlightGuard inFlightGuard = new InFlightGuard();
 
     @Override
     public void onEnable() {
@@ -56,7 +58,7 @@ public final class Vessel extends JavaPlugin {
 
         Messages.init(this.configManager);
 
-        this.effectHandler = new EffectHandler();
+        this.effectHandler = new EffectHandler(this);
         this.cooldownHandler = new CooldownHandler();
         this.actionHandler = new ActionHandler(this);
         this.vesselManager = new VesselManager(this);
@@ -103,7 +105,14 @@ public final class Vessel extends JavaPlugin {
     }
 
     @Override
-    public void onDisable() {}
+    public void onDisable() {
+        // PlugMan-hotswap safety: null out static state so nothing outlives this classloader across
+        // an unload/reload cycle. Listeners/commands are torn down by Bukkit's own plugin-disable
+        // handling; there are no schedulers, open connections, or background tasks of Vessel's own
+        // to stop here (CooldownHandler's Guava cache and InFlightGuard's set both just get GC'd
+        // with this instance).
+        plugin = null;
+    }
 
     public static Vessel getPlugin() {
         return plugin;
@@ -131,5 +140,9 @@ public final class Vessel extends JavaPlugin {
 
     public ProtectionService getProtectionService() {
         return protectionService;
+    }
+
+    public InFlightGuard getInFlightGuard() {
+        return inFlightGuard;
     }
 }
