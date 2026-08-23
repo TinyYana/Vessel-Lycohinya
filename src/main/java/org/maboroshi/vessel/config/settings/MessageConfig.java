@@ -53,6 +53,10 @@ public class MessageConfig {
             @Comment("Message shown when a player tries to capture a named mob while named mobs are excluded.")
             public String cannotCaptureNamed = "<prefix> You cannot capture this named mob!";
 
+            @Comment("Message shown when a player tries to capture an entity that is being ridden by a player.")
+            public String cannotCaptureRiddenByPlayer =
+                    "<prefix> You cannot capture an entity while a player is riding it!";
+
             @Comment(
                     "Message shown when a player attempts to use the vessel on a blacklisted entity type or restricted spawn reason.")
             public String blacklistedEntity = "<prefix> You cannot use the vessel on <gray><entity_type></gray>!";

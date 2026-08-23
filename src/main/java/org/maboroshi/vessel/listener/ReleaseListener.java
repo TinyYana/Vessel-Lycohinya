@@ -6,7 +6,6 @@ import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Entity;
-import org.bukkit.entity.EntitySnapshot;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -28,6 +27,7 @@ import org.maboroshi.vessel.protection.ProtectionResult;
 import org.maboroshi.vessel.storage.VesselDataException;
 import org.maboroshi.vessel.storage.VesselPayloadStore;
 import org.maboroshi.vessel.storage.VesselPayloadStore.ReadResult;
+import org.maboroshi.vessel.storage.entity.CompoundEntityTree;
 import org.maboroshi.vessel.util.Keys;
 import org.maboroshi.vessel.util.Log;
 import org.maboroshi.vessel.util.Messages;
@@ -165,27 +165,44 @@ public class ReleaseListener implements Listener {
             }
         }
 
-        EntitySnapshot snapshot = readResult.snapshot();
-        String mobId = snapshot.getEntityType().name().toLowerCase(Locale.ROOT);
-        Entity tempMob = snapshot.createEntity(loc.getWorld());
-
-        if (!player.hasPermission("vessel.release.*")
-                && !player.hasPermission("vessel.release." + mobId)
-                && !VesselUtils.hasGroupPermission(player, tempMob, "release")) {
-            Messages.send(player, config.getMessageConfig().general.cannotRelease, Messages.tag("entity_type", mobId));
+        CompoundEntityTree tree;
+        try {
+            tree = CompoundEntityTree.fromSnbt(readResult.payload().payload());
+            tree.populateSnapshots(Bukkit.getEntityFactory());
+        } catch (VesselDataException e) {
+            Log.debug("Failed to parse compound entity tree: " + e.getMessage());
+            Messages.send(player, config.getMessageConfig().general.corruptedVesselData);
             return;
         }
 
+        // Validate release permissions across all entity types in the riding hierarchy
+        for (CompoundEntityTree node : tree.flatten()) {
+            String nodeMobId = node.getEntityType().toLowerCase(Locale.ROOT);
+            Entity tempMob = node.getSnapshot().createEntity(loc.getWorld());
+
+            if (!player.hasPermission("vessel.release.*")
+                    && !player.hasPermission("vessel.release." + nodeMobId)
+                    && !VesselUtils.hasGroupPermission(player, tempMob, "release")) {
+                Messages.send(
+                        player,
+                        config.getMessageConfig().general.cannotRelease,
+                        Messages.tag("entity_type", nodeMobId));
+                return;
+            }
+        }
+
+        String mobId = tree.getEntityType().toLowerCase(Locale.ROOT);
         String savedName = meta.getPersistentDataContainer().get(Keys.MOB_NAME, PersistentDataType.STRING);
         String savedReason = meta.getPersistentDataContainer().get(Keys.SPAWN_REASON, PersistentDataType.STRING);
 
         VesselReleaseEvent releaseEvent = new VesselReleaseEvent(
-                player, snapshot, loc, vesselType, savedName != null ? savedName : mobId, itemInHand);
+                player, tree.getSnapshot(), loc, vesselType, savedName != null ? savedName : mobId, itemInHand);
         plugin.getServer().getPluginManager().callEvent(releaseEvent);
 
         if (releaseEvent.isCancelled()) return;
 
-        Entity releasedMob;
+        CreatureSpawnEvent.SpawnReason spawnReason = resolveSpawnReason(savedReason);
+        Entity releasedMob = null;
         String mythicId = meta.getPersistentDataContainer().get(Keys.MYTHIC_ID, PersistentDataType.STRING);
         boolean mythic = mythicId != null && !mythicId.isEmpty();
 
@@ -193,25 +210,40 @@ public class ReleaseListener implements Listener {
             try {
                 releasedMob = MythicHook.spawnMob(mythicId, loc);
 
-                if (releasedMob != null && savedReason != null) {
-                    releasedMob
-                            .getPersistentDataContainer()
-                            .set(Keys.SPAWN_REASON, PersistentDataType.STRING, savedReason.toUpperCase(Locale.ROOT));
+                if (releasedMob != null) {
+                    if (savedReason != null) {
+                        releasedMob
+                                .getPersistentDataContainer()
+                                .set(
+                                        Keys.SPAWN_REASON,
+                                        PersistentDataType.STRING,
+                                        savedReason.toUpperCase(Locale.ROOT));
+                    }
+                    releasedMob.getPersistentDataContainer().set(Keys.FROM_VESSEL, PersistentDataType.BOOLEAN, true);
                 }
             } catch (Exception e) {
-                Log.error("Failed to spawn MythicMob type '" + mythicId + "', falling back to vanilla snapshot.");
-                releasedMob = spawnVanillaSnapshot(snapshot, loc, savedReason);
+                Log.error(
+                        "Failed to spawn MythicMob type '" + mythicId + "', falling back to vanilla compound restore.");
             }
-        } else {
-            releasedMob = spawnVanillaSnapshot(snapshot, loc, savedReason);
         }
 
         if (releasedMob == null) {
-            Log.error("Failed to spawn entity from snapshot during release.");
-            return;
+            org.maboroshi.vessel.storage.entity.CompoundEntityRestorer.RestoreResult restoreResult =
+                    org.maboroshi.vessel.storage.entity.CompoundEntityRestorer.restore(
+                            tree, loc, spawnReason, savedReason);
+            if (!restoreResult.success()) {
+                Log.error("Failed to restore compound entity: " + restoreResult.errorMessage());
+                Messages.send(player, config.getMessageConfig().general.noSafeReleaseSpace);
+                return;
+            }
+            releasedMob = restoreResult.rootEntity();
         }
 
-        releasedMob.getPersistentDataContainer().set(Keys.FROM_VESSEL, PersistentDataType.BOOLEAN, true);
+        if (releasedMob == null) {
+            Log.error("Failed to spawn entity tree from snapshot during release.");
+            Messages.send(player, config.getMessageConfig().general.noSafeReleaseSpace);
+            return;
+        }
 
         VesselTemplate.BehaviorSettings behavior = template.behavior;
 
@@ -236,15 +268,6 @@ public class ReleaseListener implements Listener {
         }
 
         cooldownHandler.setCooldown(player.getUniqueId());
-    }
-
-    private Entity spawnVanillaSnapshot(EntitySnapshot snapshot, Location loc, String savedReason) {
-        Entity tempMob = snapshot.createEntity(loc.getWorld());
-        CreatureSpawnEvent.SpawnReason spawnReason = resolveSpawnReason(savedReason);
-        if (tempMob.spawnAt(loc, spawnReason)) {
-            return tempMob;
-        }
-        return null;
     }
 
     private CreatureSpawnEvent.SpawnReason resolveSpawnReason(String savedReason) {

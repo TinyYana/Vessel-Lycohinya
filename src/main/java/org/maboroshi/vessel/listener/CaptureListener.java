@@ -114,70 +114,93 @@ public class CaptureListener implements Listener {
             return;
         }
 
-        String mobId = clickedMob.getType().name().toLowerCase(Locale.ROOT);
-        ExclusionSettings rules = restrictions.exclusions;
+        // Collect all entities in the riding subtree rooted at clickedMob
+        java.util.List<Entity> entityTree = new java.util.ArrayList<>();
+        collectEntityTree(clickedMob, entityTree);
 
-        String rawMobName = clickedMob.getName() != null ? clickedMob.getName() : mobId;
-        String safeMobName =
-                mm.serialize(LegacyComponentSerializer.legacySection().deserialize(rawMobName));
-
-        if (clickedMob.getPersistentDataContainer().has(Keys.SPAWN_REASON, PersistentDataType.STRING)) {
-            String reason = clickedMob.getPersistentDataContainer().get(Keys.SPAWN_REASON, PersistentDataType.STRING);
-            if (!VesselUtils.isAllowed(reason, rules.spawnReasons)) {
-                Messages.send(
-                        player,
-                        config.getMessageConfig().general.blacklistedEntity,
-                        Messages.tag("entity_type", mobId),
-                        Messages.tag("spawn_reason", reason),
-                        Messages.tagParsed("entity_name", safeMobName));
-                Log.debug("Player " + player.getName() + " tried to capture entity spawned by reason " + reason + ".");
+        // Disallow capture if any passenger is a player
+        for (Entity entity : entityTree) {
+            if (entity instanceof Player) {
+                Messages.send(player, config.getMessageConfig().general.cannotCaptureRiddenByPlayer);
                 return;
             }
         }
 
-        if (clickedMob instanceof Tameable pet && pet.isTamed()) {
-            UUID owner = pet.getOwnerUniqueId();
-            if (owner != null) {
-                if (owner.equals(player.getUniqueId())) {
-                    if (rules.tamed) {
-                        Messages.send(player, config.getMessageConfig().general.cannotCaptureTamed);
-                        return;
-                    }
-                } else {
-                    if (rules.othersTamed) {
-                        Messages.send(player, config.getMessageConfig().general.cannotCaptureOthersTamed);
-                        return;
+        ExclusionSettings rules = restrictions.exclusions;
+        FilterRule mobs = restrictions.entities;
+
+        // Validate capture permissions and restrictions for all entities in the tree
+        for (Entity entity : entityTree) {
+            String mobId = entity.getType().name().toLowerCase(Locale.ROOT);
+            String rawMobName = entity.getName() != null ? entity.getName() : mobId;
+            String safeMobName =
+                    mm.serialize(LegacyComponentSerializer.legacySection().deserialize(rawMobName));
+
+            if (entity.getPersistentDataContainer().has(Keys.SPAWN_REASON, PersistentDataType.STRING)) {
+                String reason = entity.getPersistentDataContainer().get(Keys.SPAWN_REASON, PersistentDataType.STRING);
+                if (!VesselUtils.isAllowed(reason, rules.spawnReasons)) {
+                    Messages.send(
+                            player,
+                            config.getMessageConfig().general.blacklistedEntity,
+                            Messages.tag("entity_type", mobId),
+                            Messages.tag("spawn_reason", reason),
+                            Messages.tagParsed("entity_name", safeMobName));
+                    Log.debug("Player " + player.getName() + " tried to capture entity spawned by reason " + reason
+                            + ".");
+                    return;
+                }
+            }
+
+            if (entity instanceof Tameable pet && pet.isTamed()) {
+                UUID owner = pet.getOwnerUniqueId();
+                if (owner != null) {
+                    if (owner.equals(player.getUniqueId())) {
+                        if (rules.tamed) {
+                            Messages.send(player, config.getMessageConfig().general.cannotCaptureTamed);
+                            return;
+                        }
+                    } else {
+                        if (rules.othersTamed) {
+                            Messages.send(player, config.getMessageConfig().general.cannotCaptureOthersTamed);
+                            return;
+                        }
                     }
                 }
             }
-        }
 
-        if (rules.named && clickedMob.customName() != null) {
-            Messages.send(
-                    player, config.getMessageConfig().general.cannotCaptureNamed, Messages.tag("entity_type", mobId));
-            return;
-        }
+            if (rules.named && entity.customName() != null) {
+                Messages.send(
+                        player,
+                        config.getMessageConfig().general.cannotCaptureNamed,
+                        Messages.tag("entity_type", mobId));
+                return;
+            }
 
-        FilterRule mobs = restrictions.entities;
+            if (!VesselUtils.isAllowed(mobId, mobs)) {
+                Log.debug("Player " + player.getName() + " tried to capture a disallowed entity: " + mobId);
+                Messages.send(
+                        player,
+                        config.getMessageConfig().general.blacklistedEntity,
+                        Messages.tag("entity_type", mobId),
+                        Messages.tagParsed("entity_name", safeMobName));
+                return;
+            }
 
-        if (!VesselUtils.isAllowed(mobId, mobs)) {
-            Log.debug("Player " + player.getName() + " tried to capture a disallowed entity.");
-            Messages.send(
-                    player,
-                    config.getMessageConfig().general.blacklistedEntity,
-                    Messages.tag("entity_type", mobId),
-                    Messages.tagParsed("entity_name", safeMobName));
-            return;
-        }
-
-        if (!player.hasPermission("vessel.capture.*")
-                && !player.hasPermission("vessel.capture." + mobId)
-                && !VesselUtils.hasGroupPermission(player, clickedMob, "capture")) {
-            Messages.send(player, config.getMessageConfig().general.cannotCapture, Messages.tag("entity_type", mobId));
-            return;
+            if (!player.hasPermission("vessel.capture.*")
+                    && !player.hasPermission("vessel.capture." + mobId)
+                    && !VesselUtils.hasGroupPermission(player, entity, "capture")) {
+                Messages.send(
+                        player, config.getMessageConfig().general.cannotCapture, Messages.tag("entity_type", mobId));
+                return;
+            }
         }
 
         if (plugin.getCooldownHandler().isOnCooldown(player.getUniqueId(), config.getMainConfig().cooldown)) return;
+
+        // If clickedMob is a passenger inside a vehicle, dismount it so the vehicle remains untouched in the world
+        if (clickedMob.isInsideVehicle()) {
+            clickedMob.leaveVehicle();
+        }
 
         String rawTargetName = clickedMob.getName() != null
                 ? clickedMob.getName()
@@ -254,7 +277,20 @@ public class CaptureListener implements Listener {
                 .values()
                 .forEach(leftover -> player.getWorld().dropItemNaturally(player.getLocation(), leftover));
 
-        clickedMob.remove();
+        // Cleanly remove all captured entities in the subtree from the world
+        for (Entity entity : entityTree) {
+            if (entity.isValid()) {
+                entity.remove();
+            }
+        }
         plugin.getCooldownHandler().setCooldown(player.getUniqueId());
+    }
+
+    private void collectEntityTree(Entity root, java.util.List<Entity> list) {
+        if (root == null) return;
+        list.add(root);
+        for (Entity passenger : root.getPassengers()) {
+            collectEntityTree(passenger, list);
+        }
     }
 }
